@@ -3,6 +3,7 @@ import java.awt.*;
 import java.awt.event.*;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
+import java.util.HashMap;
 import java.util.Random;
 
 public final class Craft4k extends JPanel implements Runnable {
@@ -14,10 +15,8 @@ public final class Craft4k extends JPanel implements Runnable {
     private static final int INTERNAL_WIDTH = 214;
     private static final int INTERNAL_HEIGHT = 120;
 
-    private static final int WORLD_SIZE = 128;
-    private static final int WORLD_OFFSET = WORLD_SIZE / 2;
-    private static final int WORLD_VOLUME =
-            WORLD_SIZE * WORLD_SIZE * WORLD_SIZE;
+    // Y range for the world (infinite in X and Z, finite vertical column)
+    private static final int WORLD_HEIGHT = 128;
 
     // Block IDs
     private static final int BLOCK_AIR = 0;
@@ -33,42 +32,15 @@ public final class Craft4k extends JPanel implements Runnable {
     private static final int BLOCK_BRICK = 10;
     private static final int BLOCK_COUNT = 11;
 
-    // Wrap world coordinates into the torus array (WORLD_SIZE = 128, power of 2)
-    private static int blockIndex(int x, int y, int z) {
-        return (x & (WORLD_SIZE - 1))
-                + (y & (WORLD_SIZE - 1)) * WORLD_SIZE
-                + (z & (WORLD_SIZE - 1)) * WORLD_SIZE * WORLD_SIZE;
+    // Pack three ints into one long key for the edit map.
+    private static long key(int x, int y, int z) {
+        return (long) x & 0x1FFFFFL
+             | ((long) y & 0x1FFFFFL) << 21
+             | ((long) z & 0x1FFFFFL) << 42;
     }
 
-    private Robot mouseRobot;
-    private boolean mouseCaptured = false;
-
     // ------------------------------------------------------------------------
-    // Input
-    // ------------------------------------------------------------------------
-
-    private final int[] inputState = new int[32767];
-
-    // ------------------------------------------------------------------------
-    // Rendering
-    // ------------------------------------------------------------------------
-
-    private final BufferedImage framebuffer =
-            new BufferedImage(
-                    INTERNAL_WIDTH,
-                    INTERNAL_HEIGHT,
-                    BufferedImage.TYPE_INT_RGB);
-
-    private final int[] pixels =
-            ((DataBufferInt) framebuffer
-                    .getRaster()
-                    .getDataBuffer())
-                    .getData();
-
-    private volatile boolean running = true;
-
-    // ------------------------------------------------------------------------
-    // Noise functions for procedural terrain
+    // Procedural world generation (pure functions of x,z — deterministic)
     // ------------------------------------------------------------------------
 
     private static int hash(int x, int z) {
@@ -109,153 +81,151 @@ public final class Craft4k extends JPanel implements Runnable {
         return value / maxValue;
     }
 
-    // ------------------------------------------------------------------------
-    // World generation
-    // ------------------------------------------------------------------------
+    // Terrain surface height at (x, z) in world coordinates.
+    // The terrain is a ceiling: blocks at y < height are AIR (underground),
+    // y == height is the surface, y > height is dirt/stone.
+    private static int getHeight(int x, int z) {
+        float nx = x / 24.0f;
+        float nz = z / 24.0f;
+        float h = fbm(nx, nz, 4);
+        float continent = smoothNoise(x / 80.0f, z / 80.0f) * 0.5f + 0.3f;
+        float detail = smoothNoise(x / 6.0f, z / 6.0f) * 0.15f;
+        int height = (int) (h * 22.0f + continent * 12.0f + detail * 3.0f + 18.0f);
+        if (height < 2) height = 2;
+        if (height >= WORLD_HEIGHT - 4) height = WORLD_HEIGHT - 4;
+        return height;
+    }
 
-    private void generateWorld(int[] blocks, Random random) {
+    // Deterministic tree check — uses a separate seed so tree placement
+    // doesn't interfere with terrain noise.
+    private static boolean hasTree(int x, int z) {
+        int h = x * 374761393 + z * 668265263;
+        h = (h ^ (h >> 13)) * 1274126177;
+        h = h ^ (h >> 16);
+        return (h & 0x7FFFFFFF) % 100 < 3;
+    }
 
-        // Generate heightmap
-        int[] heightmap = new int[WORLD_SIZE * WORLD_SIZE];
+    // Deterministic trunk height for a tree at (x, z).
+    private static int treeTrunkHeight(int x, int z) {
+        int h = x * 1000003 + z * 1000033;
+        h = (h ^ (h >> 13)) * 1274126177;
+        return 4 + ((h ^ (h >> 16)) & 1);
+    }
 
-        for (int x = 0; x < WORLD_SIZE; x++) {
-            for (int z = 0; z < WORLD_SIZE; z++) {
-                float nx = x / 24.0f;
-                float nz = z / 24.0f;
-                float h = fbm(nx, nz, 4);
-                float continent = smoothNoise(x / 80.0f, z / 80.0f) * 0.5f + 0.3f;
-                float detail = smoothNoise(x / 6.0f, z / 6.0f) * 0.15f;
-                int height = (int) (h * 22.0f + continent * 12.0f + detail * 3.0f + 18.0f);
-                if (height < 2) height = 2;
-                if (height >= WORLD_SIZE - 4) height = WORLD_SIZE - 4;
-                heightmap[x + z * WORLD_SIZE] = height;
-            }
+    // Deterministic random for leaf corner skipping.
+    private static boolean skipLeafCorner(int x, int z, int lx, int lz) {
+        int h = x * 1000037 + z * 1000039 + lx * 1009 + lz * 1013;
+        h = (h ^ (h >> 13)) * 1274126177;
+        return ((h ^ (h >> 16)) & 1) == 0;
+    }
+
+    // Check if (x, y, z) is part of a tree centered at (tx, tz).
+    // Returns the block ID (WOOD or LEAVES) or 0 if not part of the tree.
+    // Trees grow downward from the surface into the air below.
+    private static int treeBlockAt(int tx, int tz, int x, int y, int z) {
+        int height = getHeight(tx, tz);
+        if (height < 8) return 0; // trees only on grass
+        int trunkH = treeTrunkHeight(tx, tz);
+        int leafBase = height - trunkH + 1;
+
+        // Trunk: from height-1 down to height-trunkH (grows downward from surface)
+        if (x == tx && z == tz && y >= height - trunkH && y <= height - 1) {
+            return BLOCK_WOOD;
         }
 
-        // Fill blocks based on heightmap
-        for (int x = 0; x < WORLD_SIZE; x++) {
-            for (int z = 0; z < WORLD_SIZE; z++) {
-                int height = heightmap[x + z * WORLD_SIZE];
-
-                for (int y = 0; y < WORLD_SIZE; y++) {
-                    int index = blockIndex(x, y, z);
-
-                    if (y < height) {
-                        blocks[index] = BLOCK_AIR;
-                    } else if (y == height) {
-                        blocks[index] = (height < 8) ? BLOCK_SAND : BLOCK_GRASS;
-                    } else if (y < height + 4) {
-                        blocks[index] = BLOCK_DIRT;
-                    } else {
-                        blocks[index] = BLOCK_STONE;
-                    }
+        // Leaves: 3x3 pattern at leafBase, leafBase-1, leafBase-2
+        // leafBase = height - trunkH + 1
+        // Bottom layer: y = leafBase
+        // Middle layer: y = leafBase - 1
+        // Top layer:    y = leafBase - 2
+        int leafY = leafBase - y;
+        if (leafY >= 0 && leafY <= 2) {
+            int dx = x - tx;
+            int dz = z - tz;
+            if (Math.abs(dx) <= 1 && Math.abs(dz) <= 1) {
+                // Top layer: skip some corners
+                if (leafY == 2 && Math.abs(dx) == 1 && Math.abs(dz) == 1
+                        && skipLeafCorner(tx, tz, dx, dz)) {
+                    return 0;
                 }
+                return BLOCK_LEAVES;
             }
         }
-
-        // Place trees
-        Random treeRandom = new Random(18295169L);
-
-        for (int x = 4; x < WORLD_SIZE - 4; x++) {
-            for (int z = 4; z < WORLD_SIZE - 4; z++) {
-                int height = heightmap[x + z * WORLD_SIZE];
-
-                if (height >= 8 && treeRandom.nextInt(100) < 3) {
-                    int trunkHeight = 4 + treeRandom.nextInt(2);
-
-                    if (height - trunkHeight - 2 >= 0) {
-                        // Trunk (grows downward from surface)
-                        for (int ty = 1; ty <= trunkHeight; ty++) {
-                            int idx = blockIndex(x, height - ty, z);
-                            blocks[idx] = BLOCK_WOOD;
-                        }
-
-                        // Leaves
-                        int leafBase = height - trunkHeight + 1;
-
-                        // Bottom layer: 3x3
-                        for (int lx = -1; lx <= 1; lx++) {
-                            for (int lz = -1; lz <= 1; lz++) {
-                                int bx = x + lx;
-                                int bz = z + lz;
-                                if (bx >= 0 && bx < WORLD_SIZE && bz >= 0 && bz < WORLD_SIZE) {
-                                    int idx = blockIndex(bx, leafBase, bz);
-                                    if (blocks[idx] == BLOCK_AIR) {
-                                        blocks[idx] = BLOCK_LEAVES;
-                                    }
-                                }
-                            }
-                        }
-
-                        // Middle layer: 3x3
-                        for (int lx = -1; lx <= 1; lx++) {
-                            for (int lz = -1; lz <= 1; lz++) {
-                                int bx = x + lx;
-                                int bz = z + lz;
-                                if (bx >= 0 && bx < WORLD_SIZE && bz >= 0 && bz < WORLD_SIZE) {
-                                    int idx = blockIndex(bx, leafBase - 1, bz);
-                                    if (blocks[idx] == BLOCK_AIR) {
-                                        blocks[idx] = BLOCK_LEAVES;
-                                    }
-                                }
-                            }
-                        }
-
-                        // Top layer: 3x3 with optional corners
-                        for (int lx = -1; lx <= 1; lx++) {
-                            for (int lz = -1; lz <= 1; lz++) {
-                                if ((Math.abs(lx) == 1 && Math.abs(lz) == 1)
-                                        && treeRandom.nextInt(2) == 0) {
-                                    continue;
-                                }
-                                int bx = x + lx;
-                                int bz = z + lz;
-                                if (bx >= 0 && bx < WORLD_SIZE && bz >= 0 && bz < WORLD_SIZE) {
-                                    int idx = blockIndex(bx, leafBase - 2, bz);
-                                    if (blocks[idx] == BLOCK_AIR) {
-                                        blocks[idx] = BLOCK_LEAVES;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        return 0;
     }
 
     // ------------------------------------------------------------------------
-    // Compute block visibility for culling
+    // Procedural block lookup
     // ------------------------------------------------------------------------
 
-    private boolean[] computeVisibility(int[] blocks) {
-        boolean[] visible = new boolean[WORLD_VOLUME];
+    // Returns the block at any world coordinate.
+    // Player edits (stored in the HashMap) override procedural generation.
+    private static int getBlock(HashMap<Long, Integer> edits, int x, int y, int z) {
+        // Y bounds check
+        if (y < 0 || y >= WORLD_HEIGHT) return BLOCK_AIR;
 
-        for (int x = 0; x < WORLD_SIZE; x++) {
-            for (int y = 0; y < WORLD_SIZE; y++) {
-                for (int z = 0; z < WORLD_SIZE; z++) {
-                    int idx = x + y * WORLD_SIZE + z * WORLD_SIZE * WORLD_SIZE;
+        // Check player edits first
+        Long k = key(x, y, z);
+        Integer edit = edits.get(k);
+        if (edit != null) return edit;
 
-                    if (blocks[idx] == BLOCK_AIR) {
-                        continue;
+        // Procedural generation
+        int height = getHeight(x, z);
+
+        // Check for trees first — they occupy the air layer below the surface
+        // (trees grow downward from the ceiling into the air).
+        if (y < height) {
+            for (int tx = -2; tx <= 2; tx++) {
+                for (int tz = -2; tz <= 2; tz++) {
+                    int cx = x + tx;
+                    int cz = z + tz;
+                    if (hasTree(cx, cz)) {
+                        int tb = treeBlockAt(cx, cz, x, y, z);
+                        if (tb != 0) return tb;
                     }
-
-                    // Use blockIndex for neighbor lookups so that torus wrapping
-                    // is correct at all boundaries (raw index arithmetic would
-                    // borrow/carry into adjacent axes and point to wrong blocks).
-                    visible[idx] =
-                            blocks[blockIndex(x - 1, y, z)] == BLOCK_AIR
-                            || blocks[blockIndex(x + 1, y, z)] == BLOCK_AIR
-                            || blocks[blockIndex(x, y - 1, z)] == BLOCK_AIR
-                            || blocks[blockIndex(x, y + 1, z)] == BLOCK_AIR
-                            || blocks[blockIndex(x, y, z - 1)] == BLOCK_AIR
-                            || blocks[blockIndex(x, y, z + 1)] == BLOCK_AIR;
                 }
             }
+            return BLOCK_AIR;
+        } else if (y == height) {
+            return (height < 8) ? BLOCK_SAND : BLOCK_GRASS;
+        } else if (y < height + 4) {
+            return BLOCK_DIRT;
+        } else {
+            return BLOCK_STONE;
         }
-
-        return visible;
     }
+
+    // Check if a block is solid (collidable).
+    private static boolean isSolid(HashMap<Long, Integer> edits, int x, int y, int z) {
+        return getBlock(edits, x, y, z) > 0;
+    }
+
+    private Robot mouseRobot;
+    private boolean mouseCaptured = false;
+
+    // ------------------------------------------------------------------------
+    // Input
+    // ------------------------------------------------------------------------
+
+    private final int[] inputState = new int[32767];
+
+    // ------------------------------------------------------------------------
+    // Rendering
+    // ------------------------------------------------------------------------
+
+    private final BufferedImage framebuffer =
+            new BufferedImage(
+                    INTERNAL_WIDTH,
+                    INTERNAL_HEIGHT,
+                    BufferedImage.TYPE_INT_RGB);
+
+    private final int[] pixels =
+            ((DataBufferInt) framebuffer
+                    .getRaster()
+                    .getDataBuffer())
+                    .getData();
+
+    private volatile boolean running = true;
 
     // ------------------------------------------------------------------------
     // Construction
@@ -416,18 +386,8 @@ public final class Craft4k extends JPanel implements Runnable {
 
         Random random = new Random();
 
-        // --------------------------------------------------------------------
-        // Generate world
-        // --------------------------------------------------------------------
-
-        int[] blocks = new int[WORLD_VOLUME];
-
-        random.setSeed(18295169L);
-
-        generateWorld(blocks, random);
-
-        // Compute visibility for culling
-        boolean[] visibleBlocks = computeVisibility(blocks);
+        // Player edits override procedural terrain
+        HashMap<Long, Integer> editedBlocks = new HashMap<>();
 
         // --------------------------------------------------------------------
         // Generate textures
@@ -615,9 +575,8 @@ public final class Craft4k extends JPanel implements Runnable {
         int spawnX = 8;
         int spawnZ = 8;
         int surfaceY = 0;
-        for (int y = 0; y < WORLD_SIZE; y++) {
-            int idx = blockIndex(spawnX, y, spawnZ);
-            if (blocks[idx] != BLOCK_AIR) {
+        for (int y = 0; y < WORLD_HEIGHT; y++) {
+            if (getBlock(editedBlocks, spawnX, y, spawnZ) != BLOCK_AIR) {
                 surfaceY = y;
                 break;
             }
@@ -625,18 +584,17 @@ public final class Craft4k extends JPanel implements Runnable {
         if (surfaceY < 1) surfaceY = 30;
 
         // Spawn below the surface (in the air, terrain is a ceiling above)
-        float cameraX = WORLD_OFFSET + spawnX + 0.5f;
-        float cameraY = WORLD_OFFSET + surfaceY - 1.5f;
-        float cameraZ = WORLD_OFFSET + spawnZ + 0.5f;
+        float cameraX = spawnX + 0.5f;
+        float cameraY = surfaceY - 1.5f;
+        float cameraZ = spawnZ + 0.5f;
 
         // Make sure spawn is clear of blocks
         int safetyCheck = 0;
         while (safetyCheck < 20) {
-            int bx = (int) Math.floor(cameraX) - WORLD_OFFSET;
-            int by = (int) Math.floor(cameraY) - WORLD_OFFSET;
-            int bz = (int) Math.floor(cameraZ) - WORLD_OFFSET;
-            int idx = blockIndex(bx, by, bz);
-            if (blocks[idx] == BLOCK_AIR) break;
+            int bx = (int) Math.floor(cameraX);
+            int by = (int) Math.floor(cameraY);
+            int bz = (int) Math.floor(cameraZ);
+            if (getBlock(editedBlocks, bx, by, bz) == BLOCK_AIR) break;
             cameraY -= 1.0f;
             safetyCheck++;
         }
@@ -650,11 +608,14 @@ public final class Craft4k extends JPanel implements Runnable {
 
         long lastTickTime = System.currentTimeMillis();
 
-        int selectedBlockIndex = -1;
-        int selectedFaceOffset = 0;
-        int selectedBlockX = 0;
-        int selectedBlockY = 0;
-        int selectedBlockZ = 0;
+        // Hit block coordinates and face normal for block editing
+        int hitBlockX = 0;
+        int hitBlockY = 0;
+        int hitBlockZ = 0;
+        int hitFaceNX = 0;
+        int hitFaceNY = 0;
+        int hitFaceNZ = 0;
+        boolean hasHitBlock = false;
 
         // Block selection menu state
         boolean blockMenuOpen = false;
@@ -757,18 +718,15 @@ public final class Craft4k extends JPanel implements Runnable {
                     for (int corner = 0; corner < 12; corner++) {
 
                         int blockX =
-                                (int) (nextX + (corner & 1) * 0.6f - 0.3f)
-                                        - WORLD_OFFSET;
+                                (int) (nextX + (corner & 1) * 0.6f - 0.3f);
 
                         int blockY =
-                                (int) (nextY + ((corner >> 2) - 1) * 0.8f + 0.65f)
-                                        - WORLD_OFFSET;
+                                (int) (nextY + ((corner >> 2) - 1) * 0.8f + 0.65f);
 
                         int blockZ =
-                                (int) (nextZ + ((corner >> 1) & 1) * 0.6f - 0.3f)
-                                        - WORLD_OFFSET;
+                                (int) (nextZ + ((corner >> 1) & 1) * 0.6f - 0.3f);
 
-                        if (blocks[blockIndex(blockX, blockY, blockZ)] > 0) {
+                        if (isSolid(editedBlocks, blockX, blockY, blockZ)) {
 
                             if (axis == 1) {
                                 if (inputState[32] > 0 && velocityY > 0) {
@@ -793,18 +751,16 @@ public final class Craft4k extends JPanel implements Runnable {
                 // ------------------------------------------------------------
 
                 {
-                    int cx = (int) Math.floor(cameraX) - WORLD_OFFSET;
-                    int cy = (int) Math.floor(cameraY) - WORLD_OFFSET;
-                    int cz = (int) Math.floor(cameraZ) - WORLD_OFFSET;
-                    int centerIdx = blockIndex(cx, cy, cz);
-                    if (blocks[centerIdx] > 0) {
+                    int cx = (int) Math.floor(cameraX);
+                    int cy = (int) Math.floor(cameraY);
+                    int cz = (int) Math.floor(cameraZ);
+                    if (isSolid(editedBlocks, cx, cy, cz)) {
                         // Check all 6 directions, find the nearest air block
                         float bestDist = Float.MAX_VALUE;
                         float pushX = 0, pushY = 0, pushZ = 0;
                         int[][] dirs = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
                         for (int[] d : dirs) {
-                            int nIdx = blockIndex(cx + d[0], cy + d[1], cz + d[2]);
-                            if (blocks[nIdx] == BLOCK_AIR) {
+                            if (!isSolid(editedBlocks, cx + d[0], cy + d[1], cz + d[2])) {
                                 float dist = (float) Math.sqrt(
                                         d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
                                 if (dist < bestDist) {
@@ -827,26 +783,13 @@ public final class Craft4k extends JPanel implements Runnable {
                 }
 
                 // ------------------------------------------------------------
-                // Wrap camera position into torus range [WORLD_OFFSET,
-                // WORLD_OFFSET + WORLD_SIZE) so it never grows unbounded.
-                // Without this, float precision degrades after a few hundred
-                // blocks of movement, causing the raycast DDA to sample
-                // wrong blocks.  Use a proper modulo so that even after
-                // moving many WORLD_SIZE multiples the camera stays in
-                // range.
-                // ------------------------------------------------------------
-
-                cameraX = WORLD_OFFSET + ((cameraX - WORLD_OFFSET) % WORLD_SIZE + WORLD_SIZE) % WORLD_SIZE;
-                cameraZ = WORLD_OFFSET + ((cameraZ - WORLD_OFFSET) % WORLD_SIZE + WORLD_SIZE) % WORLD_SIZE;
-
-                // ------------------------------------------------------------
                 // Void respawn
                 // ------------------------------------------------------------
 
-                if (cameraY < WORLD_OFFSET - 30.0f) {
-                    cameraX = WORLD_OFFSET + spawnX + 0.5f;
-                    cameraY = WORLD_OFFSET + surfaceY - 1.5f;
-                    cameraZ = WORLD_OFFSET + spawnZ + 0.5f;
+                if (cameraY < -30.0f) {
+                    cameraX = spawnX + 0.5f;
+                    cameraY = surfaceY - 1.5f;
+                    cameraZ = spawnZ + 0.5f;
                     velocityX = 0.0f;
                     velocityY = 0.0f;
                     velocityZ = 0.0f;
@@ -876,18 +819,18 @@ public final class Craft4k extends JPanel implements Runnable {
                     inputState[0] = 0;
                 }
             } else {
-                if (inputState[1] > 0 && selectedBlockIndex >= 0) {
-                    blocks[selectedBlockIndex] = 0;
-                    visibleBlocks = computeVisibility(blocks);
+                if (inputState[1] > 0 && hasHitBlock) {
+                    editedBlocks.put(key(hitBlockX, hitBlockY, hitBlockZ), BLOCK_AIR);
                     inputState[1] = 0;
                 }
 
-                if (inputState[0] > 0 && selectedBlockIndex >= 0) {
-                    int placeIndex = selectedBlockIndex + selectedFaceOffset;
-                    if (placeIndex >= 0 && placeIndex < WORLD_VOLUME
-                            && blocks[placeIndex] == BLOCK_AIR) {
-                        blocks[placeIndex] = selectedBlockType;
-                        visibleBlocks = computeVisibility(blocks);
+                if (inputState[0] > 0 && hasHitBlock) {
+                    int placeX = hitBlockX + hitFaceNX;
+                    int placeY = hitBlockY + hitFaceNY;
+                    int placeZ = hitBlockZ + hitFaceNZ;
+                    if (placeY >= 0 && placeY < WORLD_HEIGHT
+                            && getBlock(editedBlocks, placeX, placeY, placeZ) == BLOCK_AIR) {
+                        editedBlocks.put(key(placeX, placeY, placeZ), selectedBlockType);
                     }
                     inputState[0] = 0;
                 }
@@ -897,8 +840,7 @@ public final class Craft4k extends JPanel implements Runnable {
             // Raycasting
             // ----------------------------------------------------------------
 
-            int hitBlock = -1;
-            int hitFace = 0;
+            hasHitBlock = false;
 
             for (int pixelX = 0; pixelX < INTERNAL_WIDTH; pixelX++) {
 
@@ -982,19 +924,13 @@ public final class Craft4k extends JPanel implements Runnable {
 
                         while (distance < closestDistance) {
 
-                            // Use Math.floor so negative ray positions correctly
-                            // map to negative world coordinates (Java's (int) cast
-                            // truncates toward zero, giving 0 instead of -1 for
-                            // small negative values, which breaks the DDA).
-                            int worldX = (int) Math.floor(rayX) - WORLD_OFFSET;
-                            int worldY = (int) Math.floor(rayY) - WORLD_OFFSET;
-                            int worldZ = (int) Math.floor(rayZ) - WORLD_OFFSET;
+                            int worldX = (int) Math.floor(rayX);
+                            int worldY = (int) Math.floor(rayY);
+                            int worldZ = (int) Math.floor(rayZ);
 
-                            int bi = blockIndex(worldX, worldY, worldZ);
+                            int blockId = getBlock(editedBlocks, worldX, worldY, worldZ);
 
-                            int blockId = blocks[bi];
-
-                            if (blockId > 0 && visibleBlocks[bi]) {
+                            if (blockId > 0) {
 
                                 textureU =
                                         ((int) ((rayX + rayZ) * 16.0f)) & 15;
@@ -1013,7 +949,12 @@ public final class Craft4k extends JPanel implements Runnable {
 
                                 int color = 0xFFFFFF;
 
-                                if (bi != hitBlock
+                                // Only draw the wireframe outline on the crosshair hit
+                                boolean isCrosshairHit = distance < 5.0f
+                                        && pixelX == 107
+                                        && pixelY == 60;
+
+                                if (!isCrosshairHit
                                         || textureU > 0
                                         && textureV % 16 > 0
                                         && textureU < 15
@@ -1026,23 +967,21 @@ public final class Craft4k extends JPanel implements Runnable {
                                 }
 
                                 // Crosshair hit detection - center pixel of internal res
-                                if (distance < 5.0f
-                                        && pixelX == 107
-                                        && pixelY == 60) {
-
-                                    hitBlock = bi;
-                                    hitFace = 0;
+                                if (isCrosshairHit) {
+                                    hasHitBlock = true;
+                                    hitBlockX = worldX;
+                                    hitBlockY = worldY;
+                                    hitBlockZ = worldZ;
+                                    hitFaceNX = 0;
+                                    hitFaceNY = 0;
+                                    hitFaceNZ = 0;
 
                                     if (axis == 0) {
-                                        hitFace = rayAxis > 0 ? -1 : 1;
+                                        hitFaceNX = rayAxis > 0 ? -1 : 1;
                                     } else if (axis == 1) {
-                                        hitFace = rayAxis > 0
-                                                ? -WORLD_SIZE
-                                                : WORLD_SIZE;
+                                        hitFaceNY = rayAxis > 0 ? -1 : 1;
                                     } else {
-                                        hitFace = rayAxis > 0
-                                                ? -WORLD_SIZE * WORLD_SIZE
-                                                : WORLD_SIZE * WORLD_SIZE;
+                                        hitFaceNZ = rayAxis > 0 ? -1 : 1;
                                     }
                                 }
 
@@ -1080,9 +1019,6 @@ public final class Craft4k extends JPanel implements Runnable {
             if (blockMenuOpen) {
                 renderBlockMenu(selectedBlockType, textures);
             }
-
-            selectedBlockIndex = hitBlock;
-            selectedFaceOffset = hitFace;
 
             repaint();
 
