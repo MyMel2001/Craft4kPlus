@@ -33,6 +33,13 @@ public final class Craft4k extends JPanel implements Runnable {
     private static final int BLOCK_BRICK = 10;
     private static final int BLOCK_COUNT = 11;
 
+    // Wrap world coordinates into the torus array (WORLD_SIZE = 128, power of 2)
+    private static int blockIndex(int x, int y, int z) {
+        return (x & (WORLD_SIZE - 1))
+                + (y & (WORLD_SIZE - 1)) * WORLD_SIZE
+                + (z & (WORLD_SIZE - 1)) * WORLD_SIZE * WORLD_SIZE;
+    }
+
     private Robot mouseRobot;
     private boolean mouseCaptured = false;
 
@@ -131,7 +138,7 @@ public final class Craft4k extends JPanel implements Runnable {
                 int height = heightmap[x + z * WORLD_SIZE];
 
                 for (int y = 0; y < WORLD_SIZE; y++) {
-                    int index = x + y * WORLD_SIZE + z * WORLD_SIZE * WORLD_SIZE;
+                    int index = blockIndex(x, y, z);
 
                     if (y < height) {
                         blocks[index] = BLOCK_AIR;
@@ -159,7 +166,7 @@ public final class Craft4k extends JPanel implements Runnable {
                     if (height - trunkHeight - 2 >= 0) {
                         // Trunk (grows downward from surface)
                         for (int ty = 1; ty <= trunkHeight; ty++) {
-                            int idx = x + (height - ty) * WORLD_SIZE + z * WORLD_SIZE * WORLD_SIZE;
+                            int idx = blockIndex(x, height - ty, z);
                             blocks[idx] = BLOCK_WOOD;
                         }
 
@@ -172,7 +179,7 @@ public final class Craft4k extends JPanel implements Runnable {
                                 int bx = x + lx;
                                 int bz = z + lz;
                                 if (bx >= 0 && bx < WORLD_SIZE && bz >= 0 && bz < WORLD_SIZE) {
-                                    int idx = bx + leafBase * WORLD_SIZE + bz * WORLD_SIZE * WORLD_SIZE;
+                                    int idx = blockIndex(bx, leafBase, bz);
                                     if (blocks[idx] == BLOCK_AIR) {
                                         blocks[idx] = BLOCK_LEAVES;
                                     }
@@ -186,7 +193,7 @@ public final class Craft4k extends JPanel implements Runnable {
                                 int bx = x + lx;
                                 int bz = z + lz;
                                 if (bx >= 0 && bx < WORLD_SIZE && bz >= 0 && bz < WORLD_SIZE) {
-                                    int idx = bx + (leafBase - 1) * WORLD_SIZE + bz * WORLD_SIZE * WORLD_SIZE;
+                                    int idx = blockIndex(bx, leafBase - 1, bz);
                                     if (blocks[idx] == BLOCK_AIR) {
                                         blocks[idx] = BLOCK_LEAVES;
                                     }
@@ -204,7 +211,7 @@ public final class Craft4k extends JPanel implements Runnable {
                                 int bx = x + lx;
                                 int bz = z + lz;
                                 if (bx >= 0 && bx < WORLD_SIZE && bz >= 0 && bz < WORLD_SIZE) {
-                                    int idx = bx + (leafBase - 2) * WORLD_SIZE + bz * WORLD_SIZE * WORLD_SIZE;
+                                    int idx = blockIndex(bx, leafBase - 2, bz);
                                     if (blocks[idx] == BLOCK_AIR) {
                                         blocks[idx] = BLOCK_LEAVES;
                                     }
@@ -233,13 +240,16 @@ public final class Craft4k extends JPanel implements Runnable {
                         continue;
                     }
 
+                    // Use blockIndex for neighbor lookups so that torus wrapping
+                    // is correct at all boundaries (raw index arithmetic would
+                    // borrow/carry into adjacent axes and point to wrong blocks).
                     visible[idx] =
-                            (x == 0 || blocks[idx - 1] == BLOCK_AIR)
-                            || (x == WORLD_SIZE - 1 || blocks[idx + 1] == BLOCK_AIR)
-                            || (y == 0 || blocks[idx - WORLD_SIZE] == BLOCK_AIR)
-                            || (y == WORLD_SIZE - 1 || blocks[idx + WORLD_SIZE] == BLOCK_AIR)
-                            || (z == 0 || blocks[idx - WORLD_SIZE * WORLD_SIZE] == BLOCK_AIR)
-                            || (z == WORLD_SIZE - 1 || blocks[idx + WORLD_SIZE * WORLD_SIZE] == BLOCK_AIR);
+                            blocks[blockIndex(x - 1, y, z)] == BLOCK_AIR
+                            || blocks[blockIndex(x + 1, y, z)] == BLOCK_AIR
+                            || blocks[blockIndex(x, y - 1, z)] == BLOCK_AIR
+                            || blocks[blockIndex(x, y + 1, z)] == BLOCK_AIR
+                            || blocks[blockIndex(x, y, z - 1)] == BLOCK_AIR
+                            || blocks[blockIndex(x, y, z + 1)] == BLOCK_AIR;
                 }
             }
         }
@@ -606,7 +616,7 @@ public final class Craft4k extends JPanel implements Runnable {
         int spawnZ = 8;
         int surfaceY = 0;
         for (int y = 0; y < WORLD_SIZE; y++) {
-            int idx = spawnX + y * WORLD_SIZE + spawnZ * WORLD_SIZE * WORLD_SIZE;
+            int idx = blockIndex(spawnX, y, spawnZ);
             if (blocks[idx] != BLOCK_AIR) {
                 surfaceY = y;
                 break;
@@ -625,10 +635,8 @@ public final class Craft4k extends JPanel implements Runnable {
             int bx = (int) Math.floor(cameraX) - WORLD_OFFSET;
             int by = (int) Math.floor(cameraY) - WORLD_OFFSET;
             int bz = (int) Math.floor(cameraZ) - WORLD_OFFSET;
-            if (bx >= 0 && bx < WORLD_SIZE && by >= 0 && by < WORLD_SIZE && bz >= 0 && bz < WORLD_SIZE) {
-                int idx = bx + by * WORLD_SIZE + bz * WORLD_SIZE * WORLD_SIZE;
-                if (blocks[idx] == BLOCK_AIR) break;
-            }
+            int idx = blockIndex(bx, by, bz);
+            if (blocks[idx] == BLOCK_AIR) break;
             cameraY -= 1.0f;
             safetyCheck++;
         }
@@ -644,6 +652,9 @@ public final class Craft4k extends JPanel implements Runnable {
 
         int selectedBlockIndex = -1;
         int selectedFaceOffset = 0;
+        int selectedBlockX = 0;
+        int selectedBlockY = 0;
+        int selectedBlockZ = 0;
 
         // Block selection menu state
         boolean blockMenuOpen = false;
@@ -757,15 +768,7 @@ public final class Craft4k extends JPanel implements Runnable {
                                 (int) (nextZ + ((corner >> 1) & 1) * 0.6f - 0.3f)
                                         - WORLD_OFFSET;
 
-                        if (blockX < 0 || blockY < 0 || blockZ < 0
-                                || blockX >= WORLD_SIZE
-                                || blockY >= WORLD_SIZE
-                                || blockZ >= WORLD_SIZE
-                                || blocks[
-                                blockX
-                                + blockY * WORLD_SIZE
-                                + blockZ * WORLD_SIZE * WORLD_SIZE]
-                                > 0) {
+                        if (blocks[blockIndex(blockX, blockY, blockZ)] > 0) {
 
                             if (axis == 1) {
                                 if (inputState[32] > 0 && velocityY > 0) {
@@ -784,6 +787,57 @@ public final class Craft4k extends JPanel implements Runnable {
                     cameraY = nextY;
                     cameraZ = nextZ;
                 }
+
+                // ------------------------------------------------------------
+                // Unstuck: if player is inside a block, push them out
+                // ------------------------------------------------------------
+
+                {
+                    int cx = (int) Math.floor(cameraX) - WORLD_OFFSET;
+                    int cy = (int) Math.floor(cameraY) - WORLD_OFFSET;
+                    int cz = (int) Math.floor(cameraZ) - WORLD_OFFSET;
+                    int centerIdx = blockIndex(cx, cy, cz);
+                    if (blocks[centerIdx] > 0) {
+                        // Check all 6 directions, find the nearest air block
+                        float bestDist = Float.MAX_VALUE;
+                        float pushX = 0, pushY = 0, pushZ = 0;
+                        int[][] dirs = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+                        for (int[] d : dirs) {
+                            int nIdx = blockIndex(cx + d[0], cy + d[1], cz + d[2]);
+                            if (blocks[nIdx] == BLOCK_AIR) {
+                                float dist = (float) Math.sqrt(
+                                        d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+                                if (dist < bestDist) {
+                                    bestDist = dist;
+                                    pushX = d[0];
+                                    pushY = d[1];
+                                    pushZ = d[2];
+                                }
+                            }
+                        }
+                        if (bestDist < Float.MAX_VALUE) {
+                            cameraX += pushX;
+                            cameraY += pushY;
+                            cameraZ += pushZ;
+                            velocityX = 0;
+                            velocityY = 0;
+                            velocityZ = 0;
+                        }
+                    }
+                }
+
+                // ------------------------------------------------------------
+                // Wrap camera position into torus range [WORLD_OFFSET,
+                // WORLD_OFFSET + WORLD_SIZE) so it never grows unbounded.
+                // Without this, float precision degrades after a few hundred
+                // blocks of movement, causing the raycast DDA to sample
+                // wrong blocks.  Use a proper modulo so that even after
+                // moving many WORLD_SIZE multiples the camera stays in
+                // range.
+                // ------------------------------------------------------------
+
+                cameraX = WORLD_OFFSET + ((cameraX - WORLD_OFFSET) % WORLD_SIZE + WORLD_SIZE) % WORLD_SIZE;
+                cameraZ = WORLD_OFFSET + ((cameraZ - WORLD_OFFSET) % WORLD_SIZE + WORLD_SIZE) % WORLD_SIZE;
 
                 // ------------------------------------------------------------
                 // Void respawn
@@ -892,19 +946,22 @@ public final class Craft4k extends JPanel implements Runnable {
 
                         float inverseAxis =
                                 1.0f / (rayAxis < 0 ? -rayAxis : rayAxis);
-
+        
                         float stepX = rotatedX * inverseAxis;
                         float stepY = directionY * inverseAxis;
                         float stepZ = rotatedZ * inverseAxis;
-
-                        float fraction = cameraX - (int) cameraX;
-
+        
+                        // Use Math.floor for the fraction so it works correctly
+                        // when the camera position is negative (Java's (int) cast
+                        // truncates toward zero, giving a wrong fraction).
+                        float fraction = cameraX - (float) Math.floor(cameraX);
+        
                         if (axis == 1) {
-                            fraction = cameraY - (int) cameraY;
+                            fraction = cameraY - (float) Math.floor(cameraY);
                         }
-
+        
                         if (axis == 2) {
-                            fraction = cameraZ - (int) cameraZ;
+                            fraction = cameraZ - (float) Math.floor(cameraZ);
                         }
 
                         if (rayAxis > 0) {
@@ -925,25 +982,19 @@ public final class Craft4k extends JPanel implements Runnable {
 
                         while (distance < closestDistance) {
 
-                            int worldX = (int) rayX - WORLD_OFFSET;
-                            int worldY = (int) rayY - WORLD_OFFSET;
-                            int worldZ = (int) rayZ - WORLD_OFFSET;
+                            // Use Math.floor so negative ray positions correctly
+                            // map to negative world coordinates (Java's (int) cast
+                            // truncates toward zero, giving 0 instead of -1 for
+                            // small negative values, which breaks the DDA).
+                            int worldX = (int) Math.floor(rayX) - WORLD_OFFSET;
+                            int worldY = (int) Math.floor(rayY) - WORLD_OFFSET;
+                            int worldZ = (int) Math.floor(rayZ) - WORLD_OFFSET;
 
-                            if (worldX < 0 || worldY < 0 || worldZ < 0
-                                    || worldX >= WORLD_SIZE
-                                    || worldY >= WORLD_SIZE
-                                    || worldZ >= WORLD_SIZE) {
-                                break;
-                            }
+                            int bi = blockIndex(worldX, worldY, worldZ);
 
-                            int blockIndex =
-                                    worldX
-                                    + worldY * WORLD_SIZE
-                                    + worldZ * WORLD_SIZE * WORLD_SIZE;
+                            int blockId = blocks[bi];
 
-                            int blockId = blocks[blockIndex];
-
-                            if (blockId > 0 && visibleBlocks[blockIndex]) {
+                            if (blockId > 0 && visibleBlocks[bi]) {
 
                                 textureU =
                                         ((int) ((rayX + rayZ) * 16.0f)) & 15;
@@ -962,7 +1013,7 @@ public final class Craft4k extends JPanel implements Runnable {
 
                                 int color = 0xFFFFFF;
 
-                                if (blockIndex != hitBlock
+                                if (bi != hitBlock
                                         || textureU > 0
                                         && textureV % 16 > 0
                                         && textureU < 15
@@ -979,7 +1030,7 @@ public final class Craft4k extends JPanel implements Runnable {
                                         && pixelX == 107
                                         && pixelY == 60) {
 
-                                    hitBlock = blockIndex;
+                                    hitBlock = bi;
                                     hitFace = 0;
 
                                     if (axis == 0) {
