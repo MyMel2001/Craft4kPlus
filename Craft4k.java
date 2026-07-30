@@ -15,8 +15,12 @@ public final class Craft4k extends JPanel implements Runnable {
     private static final int INTERNAL_WIDTH = 214;
     private static final int INTERNAL_HEIGHT = 120;
 
-    // Y range for the world (infinite in X and Z, finite vertical column)
-    private static final int WORLD_HEIGHT = 128;
+    // ------------------------------------------------------------------------
+    // Configurable properties
+    // ------------------------------------------------------------------------
+
+    private final int worldHeight;
+    private final long seed;
 
     // Block IDs
     private static final int BLOCK_AIR = 0;
@@ -43,13 +47,13 @@ public final class Craft4k extends JPanel implements Runnable {
     // Procedural world generation (pure functions of x,z — deterministic)
     // ------------------------------------------------------------------------
 
-    private static int hash(int x, int z) {
-        int h = x * 374761393 + z * 668265263;
+    private int hash(int x, int z) {
+        int h = (int)(seed * 2654435761L) ^ (x * 374761393 + z * 668265263);
         h = (h ^ (h >> 13)) * 1274126177;
         return h ^ (h >> 16);
     }
 
-    private static float smoothNoise(float x, float z) {
+    private float smoothNoise(float x, float z) {
         int ix = (int) Math.floor(x);
         int iz = (int) Math.floor(z);
         float fx = x - ix;
@@ -67,7 +71,7 @@ public final class Craft4k extends JPanel implements Runnable {
                 + (v00 - v10 - v01 + v11) * fx * fz;
     }
 
-    private static float fbm(float x, float z, int octaves) {
+    private float fbm(float x, float z, int octaves) {
         float value = 0.0f;
         float amplitude = 1.0f;
         float frequency = 1.0f;
@@ -84,7 +88,7 @@ public final class Craft4k extends JPanel implements Runnable {
     // Terrain surface height at (x, z) in world coordinates.
     // The terrain is a ceiling: blocks at y < height are AIR (underground),
     // y == height is the surface, y > height is dirt/stone.
-    private static int getHeight(int x, int z) {
+    private int getHeight(int x, int z) {
         float nx = x / 24.0f;
         float nz = z / 24.0f;
         float h = fbm(nx, nz, 4);
@@ -92,29 +96,29 @@ public final class Craft4k extends JPanel implements Runnable {
         float detail = smoothNoise(x / 6.0f, z / 6.0f) * 0.15f;
         int height = (int) (h * 22.0f + continent * 12.0f + detail * 3.0f + 18.0f);
         if (height < 2) height = 2;
-        if (height >= WORLD_HEIGHT - 4) height = WORLD_HEIGHT - 4;
+        if (height >= worldHeight - 4) height = worldHeight - 4;
         return height;
     }
 
     // Deterministic tree check — uses a separate seed so tree placement
     // doesn't interfere with terrain noise.
-    private static boolean hasTree(int x, int z) {
-        int h = x * 374761393 + z * 668265263;
+    private boolean hasTree(int x, int z) {
+        int h = (int)(seed * 2654435761L) ^ (x * 374761393 + z * 668265263);
         h = (h ^ (h >> 13)) * 1274126177;
         h = h ^ (h >> 16);
         return (h & 0x7FFFFFFF) % 100 < 3;
     }
 
     // Deterministic trunk height for a tree at (x, z).
-    private static int treeTrunkHeight(int x, int z) {
-        int h = x * 1000003 + z * 1000033;
+    private int treeTrunkHeight(int x, int z) {
+        int h = (int)(seed * 2654435761L) ^ (x * 1000003 + z * 1000033);
         h = (h ^ (h >> 13)) * 1274126177;
         return 4 + ((h ^ (h >> 16)) & 1);
     }
 
     // Deterministic random for leaf corner skipping.
-    private static boolean skipLeafCorner(int x, int z, int lx, int lz) {
-        int h = x * 1000037 + z * 1000039 + lx * 1009 + lz * 1013;
+    private boolean skipLeafCorner(int x, int z, int lx, int lz) {
+        int h = (int)(seed * 2654435761L) ^ (x * 1000037 + z * 1000039 + lx * 1009 + lz * 1013);
         h = (h ^ (h >> 13)) * 1274126177;
         return ((h ^ (h >> 16)) & 1) == 0;
     }
@@ -122,7 +126,7 @@ public final class Craft4k extends JPanel implements Runnable {
     // Check if (x, y, z) is part of a tree centered at (tx, tz).
     // Returns the block ID (WOOD or LEAVES) or 0 if not part of the tree.
     // Trees grow downward from the surface into the air below.
-    private static int treeBlockAt(int tx, int tz, int x, int y, int z) {
+    private int treeBlockAt(int tx, int tz, int x, int y, int z) {
         int height = getHeight(tx, tz);
         if (height < 8) return 0; // trees only on grass
         int trunkH = treeTrunkHeight(tx, tz);
@@ -160,9 +164,9 @@ public final class Craft4k extends JPanel implements Runnable {
 
     // Returns the block at any world coordinate.
     // Player edits (stored in the HashMap) override procedural generation.
-    private static int getBlock(HashMap<Long, Integer> edits, int x, int y, int z) {
+    private int getBlock(HashMap<Long, Integer> edits, int x, int y, int z) {
         // Y bounds check
-        if (y < 0 || y >= WORLD_HEIGHT) return BLOCK_AIR;
+        if (y < 0 || y >= worldHeight) return BLOCK_AIR;
 
         // Check player edits first
         Long k = key(x, y, z);
@@ -196,7 +200,7 @@ public final class Craft4k extends JPanel implements Runnable {
     }
 
     // Check if a block is solid (collidable).
-    private static boolean isSolid(HashMap<Long, Integer> edits, int x, int y, int z) {
+    private boolean isSolid(HashMap<Long, Integer> edits, int x, int y, int z) {
         return getBlock(edits, x, y, z) > 0;
     }
 
@@ -231,7 +235,9 @@ public final class Craft4k extends JPanel implements Runnable {
     // Construction
     // ------------------------------------------------------------------------
 
-    public Craft4k() {
+    public Craft4k(int worldHeight, long seed) {
+        this.worldHeight = worldHeight;
+        this.seed = seed;
 
         try {
             mouseRobot = new Robot();
@@ -575,7 +581,7 @@ public final class Craft4k extends JPanel implements Runnable {
         int spawnX = 8;
         int spawnZ = 8;
         int surfaceY = 0;
-        for (int y = 0; y < WORLD_HEIGHT; y++) {
+        for (int y = 0; y < worldHeight; y++) {
             if (getBlock(editedBlocks, spawnX, y, spawnZ) != BLOCK_AIR) {
                 surfaceY = y;
                 break;
@@ -828,7 +834,7 @@ public final class Craft4k extends JPanel implements Runnable {
                     int placeX = hitBlockX + hitFaceNX;
                     int placeY = hitBlockY + hitFaceNY;
                     int placeZ = hitBlockZ + hitFaceNZ;
-                    if (placeY >= 0 && placeY < WORLD_HEIGHT
+                    if (placeY >= 0 && placeY < worldHeight
                             && getBlock(editedBlocks, placeX, placeY, placeZ) == BLOCK_AIR) {
                         editedBlocks.put(key(placeX, placeY, placeZ), selectedBlockType);
                     }
