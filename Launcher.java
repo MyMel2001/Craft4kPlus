@@ -65,7 +65,7 @@ public final class Launcher {
         SwingUtilities.invokeLater(() -> {
 
             JFrame window =
-                    new JFrame("Craft4k");
+                    new JFrame("Craft4k Plus");
 
             Craft4k game =
                     new Craft4k(finalWorldHeight, finalSeed);

@@ -329,9 +329,9 @@ public final class Craft4k extends JPanel implements Runnable {
                         inputState[3] = e.getY();
 
                         if (SwingUtilities.isRightMouseButton(e)) {
-                            inputState[1] = 1;
-                        } else {
                             inputState[0] = 1;
+                        } else {
+                            inputState[1] = 1;
                         }
                     }
 
@@ -339,9 +339,9 @@ public final class Craft4k extends JPanel implements Runnable {
                     public void mouseReleased(MouseEvent e) {
 
                         if (SwingUtilities.isRightMouseButton(e)) {
-                            inputState[1] = 0;
-                        } else {
                             inputState[0] = 0;
+                        } else {
+                            inputState[1] = 0;
                         }
                     }
 
@@ -379,7 +379,7 @@ public final class Craft4k extends JPanel implements Runnable {
     public void start() {
 
         Thread.ofPlatform()
-                .name("Craft4k")
+                .name("Craft4k Plus")
                 .start(this);
     }
 
