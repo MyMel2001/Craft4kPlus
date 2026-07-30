@@ -10,6 +10,6 @@ An extension of the features of [Craft4k.](https://github.com/mymel2001/craft4k)
 
 1. Grab a copy of the source code and OpenJDK 25.
 2. Use the command ```javac Craft4k.java Launcher.java``` compile.
-3. Use ```jar cfm Craft4k.jar manifest.txt *.class``` if you want to jar for distribution!
-4. use ```java -jar Craft4k.jar``` to run if made for distribution, ```java Launcher``` if not (note: no ".class"!)
+3. Use ```jar cfm Craft4kPlus.jar manifest.txt *.class``` if you want to jar for distribution!
+4. use ```java -jar Craft4kPlus.jar``` to run if made for distribution, ```java Launcher``` if not (note: no ".class"!)
 
