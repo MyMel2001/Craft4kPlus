@@ -807,7 +807,7 @@ public final class Craft4k extends JPanel implements Runnable {
             // ---------------------------------------------------------------
 
             if (blockMenuOpen) {
-                if (inputState[0] > 0) {
+                if (inputState[1] > 0) {
                     int mouseMenuX = inputState[2] / 4;
                     int mouseMenuY = inputState[3] / 4;
 
@@ -822,7 +822,7 @@ public final class Craft4k extends JPanel implements Runnable {
                             selectedBlockType = clickedSlot + 1;
                         }
                     }
-                    inputState[0] = 0;
+                    inputState[1] = 0;
                 }
             } else {
                 if (inputState[1] > 0 && hasHitBlock) {
