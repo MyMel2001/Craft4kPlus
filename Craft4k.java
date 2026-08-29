@@ -3,6 +3,8 @@ import java.awt.*;
 import java.awt.event.*;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Random;
 
@@ -21,6 +23,9 @@ public final class Craft4k extends JPanel implements Runnable {
 
     private final int worldHeight;
     private final long seed;
+    private final Path savePath;
+    private final HashMap<Long, Integer> editedBlocks = new HashMap<>();
+    private volatile boolean saveRequested = false;
 
     // Block IDs
     private static final int BLOCK_AIR = 0;
@@ -235,9 +240,17 @@ public final class Craft4k extends JPanel implements Runnable {
     // Construction
     // ------------------------------------------------------------------------
 
-    public Craft4k(int worldHeight, long seed) {
+    public Craft4k(int worldHeight, long seed, Path savePath) throws IOException {
         this.worldHeight = worldHeight;
-        this.seed = seed;
+        this.savePath = savePath;
+
+        if (savePath != null && java.nio.file.Files.exists(savePath)) {
+            GameSave save = GameSave.load(savePath);
+            this.seed = save.seed;
+            this.editedBlocks.putAll(save.editedBlocks);
+        } else {
+            this.seed = seed;
+        }
 
         try {
             mouseRobot = new Robot();
@@ -259,6 +272,11 @@ public final class Craft4k extends JPanel implements Runnable {
 
             @Override
             public void keyPressed(KeyEvent event) {
+
+                if (event.isControlDown() && event.getKeyCode() == KeyEvent.VK_S) {
+                    saveRequested = true;
+                    return;
+                }
 
                 char key = Character.toLowerCase(event.getKeyChar());
 
@@ -383,6 +401,10 @@ public final class Craft4k extends JPanel implements Runnable {
                 .start(this);
     }
 
+    public void stop() {
+        running = false;
+    }
+
     // ------------------------------------------------------------------------
     // Main game loop
     // ------------------------------------------------------------------------
@@ -391,9 +413,6 @@ public final class Craft4k extends JPanel implements Runnable {
     public void run() {
 
         Random random = new Random();
-
-        // Player edits override procedural terrain
-        HashMap<Long, Integer> editedBlocks = new HashMap<>();
 
         // --------------------------------------------------------------------
         // Generate textures
@@ -633,6 +652,11 @@ public final class Craft4k extends JPanel implements Runnable {
 
         while (running) {
 
+            if (saveRequested) {
+                saveRequested = false;
+                saveGame();
+            }
+
             float sinYaw = (float) Math.sin(yaw);
             float cosYaw = (float) Math.cos(yaw);
             float sinPitch = (float) Math.sin(pitch);
@@ -826,7 +850,9 @@ public final class Craft4k extends JPanel implements Runnable {
                 }
             } else {
                 if (inputState[1] > 0 && hasHitBlock) {
-                    editedBlocks.put(key(hitBlockX, hitBlockY, hitBlockZ), BLOCK_AIR);
+                    synchronized (editedBlocks) {
+                        editedBlocks.put(key(hitBlockX, hitBlockY, hitBlockZ), BLOCK_AIR);
+                    }
                     inputState[1] = 0;
                 }
 
@@ -836,7 +862,9 @@ public final class Craft4k extends JPanel implements Runnable {
                     int placeZ = hitBlockZ + hitFaceNZ;
                     if (placeY >= 0 && placeY < worldHeight
                             && getBlock(editedBlocks, placeX, placeY, placeZ) == BLOCK_AIR) {
-                        editedBlocks.put(key(placeX, placeY, placeZ), selectedBlockType);
+                        synchronized (editedBlocks) {
+                            editedBlocks.put(key(placeX, placeY, placeZ), selectedBlockType);
+                        }
                     }
                     inputState[0] = 0;
                 }
@@ -1034,6 +1062,21 @@ public final class Craft4k extends JPanel implements Runnable {
                 Thread.currentThread().interrupt();
                 return;
             }
+        }
+    }
+
+    public void saveGame() {
+        if (savePath == null) {
+            System.out.println("No save file selected.");
+            return;
+        }
+        try {
+            synchronized (editedBlocks) {
+                GameSave.save(savePath, seed, editedBlocks);
+            }
+            System.out.println("Saved game to " + savePath);
+        } catch (IOException e) {
+            System.err.println("Could not save game to " + savePath + ": " + e.getMessage());
         }
     }
 

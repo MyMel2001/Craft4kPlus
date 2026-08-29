@@ -13,6 +13,23 @@ An extension of the features of [Craft4k.](https://github.com/mymel2001/craft4k)
 3. Use ```jar cfm Craft4kPlus.jar manifest.txt *.class``` if you want to jar for distribution!
 4. use ```java -jar Craft4kPlus.jar``` to run if made for distribution, ```java Launcher``` if not (note: no ".class"!)
 
+## Save files
+
+Launch with `--save <file>` to load an existing save or create a new save at that path:
+
+```sh
+java -jar Craft4kPlus.jar --seed 12345 --save worlds/my-world.c4ks
+```
+
+Save files currently contain the world seed and player-edited blocks. Press `Ctrl+S` to save while playing; the game also saves when its window closes. The launch helpers accept save paths as well:
+
+```sh
+./launch-existing-seed.sh 12345 worlds/my-world.c4ks
+./launch-random-seed.sh worlds/random-world.c4ks
+```
+
+If omitted, the existing-seed launcher uses `save-<seed>.c4ks`, and the random-seed launcher uses `random-save.c4ks`.
+
 ## What does it look like?
 
 <img width="906" height="567" alt="image" src="https://github.com/user-attachments/assets/af2bd861-4941-4657-9c70-82c308c71afb" />

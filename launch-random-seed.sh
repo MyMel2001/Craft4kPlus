@@ -1,6 +1,12 @@
 #!/bin/bash
-C4KPSEED1=$(echo "$RANDOM$RANDOM$(date +%s%N)$RANDOM$(date +%s%N)" | tail -c 6)
-C4KPSEED2=$(echo "$RANDOM$RANDOM$(date +%s%N)$RANDOM$(date +%s%N)" | head -c 9)
-C4KPSEEDF=$(echo $C4KPSEED1$C4KPSEED2)
-echo "The current seed: $C4KPSEEDF"
-java -jar Craft4kPlus.jar --seed $C4KPSEEDF
+set -e
+
+if [ "$#" -gt 1 ]; then
+    echo "Usage: $0 [save-file]"
+    exit 1
+fi
+
+seed="$(od -An -N8 -td8 /dev/urandom | tr -d ' ')"
+save_file="${1:-random-save.c4ks}"
+echo "The current seed: $seed"
+java -jar Craft4kPlus.jar --seed "$seed" --save "$save_file"
